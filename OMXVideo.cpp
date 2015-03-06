@@ -407,6 +407,7 @@ bool COMXVideo::Open(COMXStreamInfo &hints, OMXClock *clock, const CRect &DestRe
 
   if(hints.extrasize > 0 && hints.extradata != NULL)
   {
+    printf("COMXVideo::Open: hints.extrasize=%08x\n", hints.extrasize);
     m_extrasize = hints.extrasize;
     m_extradata = (uint8_t *)malloc(m_extrasize);
     memcpy(m_extradata, hints.extradata, hints.extrasize);
