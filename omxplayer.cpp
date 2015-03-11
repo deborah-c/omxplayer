@@ -101,6 +101,7 @@ bool              m_ghost_box           = true;
 unsigned int      m_subtitle_lines      = 3;
 bool              m_Pause               = false;
 OMXReader         m_omx_reader;
+OMXReader         m_omx_reader2;
 int               m_audio_index_use     = 0;
 bool              m_thread_player       = false;
 OMXClock          *m_av_clock           = NULL;
@@ -109,6 +110,7 @@ Keyboard          *m_keyboard           = NULL;
 COMXStreamInfo    m_hints_audio;
 COMXStreamInfo    m_hints_video;
 OMXPacket         *m_omx_pkt            = NULL;
+OMXPacket         *m_omx_pkt2           = NULL;
 bool              m_hdmi_clock_sync     = false;
 bool              m_no_hdmi_clock_sync  = false;
 bool              m_stop                = false;
@@ -119,6 +121,7 @@ OMXPlayerAudio    m_player_audio;
 OMXPlayerSubtitles  m_player_subtitles;
 int               m_tv_show_info        = 0;
 bool              m_has_video           = false;
+bool              m_has_video2          = false;
 bool              m_has_audio           = false;
 bool              m_has_subtitle        = false;
 float             m_display_aspect      = 0.0f;
@@ -259,6 +262,12 @@ static void FlushStreams(double pts)
   {
     m_omx_reader.FreePacket(m_omx_pkt);
     m_omx_pkt = NULL;
+  }
+
+  if(m_omx_pkt2)
+  {
+    m_omx_reader.FreePacket(m_omx_pkt2);
+    m_omx_pkt2 = NULL;
   }
 }
 
@@ -538,6 +547,7 @@ int main(int argc, char *argv[])
   bool idle = false;
   std::string            m_cookie              = "";
   std::string            m_user_agent          = "";
+  std::string            m_other_eye           = "";
 
   const int font_opt        = 0x100;
   const int italic_font_opt = 0x201;
@@ -573,6 +583,7 @@ int main(int argc, char *argv[])
   const int display_opt     = 0x20f;
   const int http_cookie_opt = 0x300;
   const int http_user_agent_opt = 0x301;
+  const int other_eye_opt   = 0x302;
 
   struct option longopts[] = {
     { "info",         no_argument,        NULL,          'i' },
@@ -629,6 +640,7 @@ int main(int argc, char *argv[])
     { "display",      required_argument,  NULL,          display_opt },
     { "cookie",       required_argument,  NULL,          http_cookie_opt },
     { "user-agent",   required_argument,  NULL,          http_user_agent_opt },
+    { "other-eye",    required_argument,  NULL,          other_eye_opt },
     { 0, 0, 0, 0 }
   };
 
@@ -857,6 +869,9 @@ int main(int argc, char *argv[])
       case http_user_agent_opt:
         m_user_agent = optarg;
         break;    
+      case other_eye_opt:
+        m_other_eye = optarg;
+        break;
       case 0:
         break;
       case 'h':
@@ -898,6 +913,18 @@ int main(int argc, char *argv[])
   {
     PrintFileNotFound(m_filename);
     return 0;
+  }
+
+  if(m_other_eye.length())
+    m_has_video2 = true;
+
+  if(m_has_video2)
+  {
+    if (IsURL(m_other_eye) || !Exists(m_other_eye))
+    {
+      PrintFileNotFound(m_other_eye);
+      return 0;
+    }
   }
 
   if(m_asked_for_font && !Exists(m_font_path))
@@ -980,6 +1007,14 @@ int main(int argc, char *argv[])
 
   if(!m_omx_reader.Open(m_filename.c_str(), m_dump_format, m_live, m_timeout, m_cookie.c_str(), m_user_agent.c_str()))
     goto do_exit;
+
+  if(m_has_video2)
+  {
+    if (!m_omx_reader2.Open(m_other_eye.c_str(), m_dump_format, 0, 0, "", "") ||
+        m_omx_reader2.VideoStreamCount() == 0)
+    goto do_exit;
+    printf("Opened other eye with %u video streams\n", m_omx_reader2.VideoStreamCount());
+  }
 
   if (m_dump_format_exit)
     goto do_exit;
@@ -1424,6 +1459,8 @@ int main(int argc, char *argv[])
         if (m_live)
         {
           m_omx_reader.Close();
+          if (m_has_video2)
+            m_omx_reader2.Close();
           idle = true;
         }
         break;
@@ -1433,6 +1470,8 @@ int main(int argc, char *argv[])
         {
           idle = false;
           if(!m_omx_reader.Open(m_filename.c_str(), m_dump_format, true))
+            goto do_exit;
+          if (m_has_video2 && !m_omx_reader2.Open(m_other_eye.c_str(), m_dump_format, true))
             goto do_exit;
         }
         m_new_win_pos = true;
@@ -1683,6 +1722,8 @@ int main(int argc, char *argv[])
 
     if(!m_omx_pkt)
       m_omx_pkt = m_omx_reader.Read();
+    if(m_has_video2 && !m_omx_pkt2)
+      m_omx_pkt2 = m_omx_reader2.Read();
 
     if(m_omx_pkt)
       m_send_eos = false;
@@ -1721,7 +1762,9 @@ int main(int argc, char *argv[])
       {
          m_packet_after_seek = true;
       }
-      if(m_player_video.AddPacket(m_omx_pkt))
+      if(m_omx_pkt2 && m_omx_pkt2->dts < m_omx_pkt->dts && m_player_video.AddPacket(m_omx_pkt2))
+        m_omx_pkt2 = NULL;
+      else if(m_player_video.AddPacket(m_omx_pkt))
         m_omx_pkt = NULL;
       else
         OMXClock::OMXSleep(10);
@@ -1793,6 +1836,8 @@ do_exit:
   }
 
   m_omx_reader.Close();
+  if (m_has_video2)
+    m_omx_reader2.Close();
 
   m_av_clock->OMXDeinitialize();
   if (m_av_clock)
