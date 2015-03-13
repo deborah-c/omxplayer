@@ -131,6 +131,7 @@ bool              m_loop                = false;
 int               m_layer               = 0;
 int               m_display             = 0;
 int               m_allow_mvc           = 0;
+FILE *            m_dcc_log = NULL;
 
 enum{ERROR=-1,SUCCESS,ONEBYTE};
 
@@ -926,6 +927,7 @@ int main(int argc, char *argv[])
       return 0;
     }
   }
+  m_dcc_log = fopen("/home/pi/dcc.log", "wt");
 
   if(m_asked_for_font && !Exists(m_font_path))
   {
@@ -1541,7 +1543,7 @@ int main(int argc, char *argv[])
         goto do_exit;
 
       if(m_has_video && !m_player_video.Open(m_hints_video, m_av_clock, DestRect, m_Deinterlace ? VS_DEINTERLACEMODE_FORCE:m_NoDeinterlace ? VS_DEINTERLACEMODE_OFF:VS_DEINTERLACEMODE_AUTO,
-                                         m_anaglyph, m_hdmi_clock_sync, m_thread_player, m_display_aspect, m_display, m_layer, video_queue_size, video_fifo_size))
+                                         m_anaglyph, m_hdmi_clock_sync, m_thread_player, m_display_aspect, m_display, m_layer, video_queue_size, video_fifo_size, m_allow_mvc))
         goto do_exit;
 
       CLog::Log(LOGDEBUG, "Seeked %.0f %.0f %.0f\n", DVD_MSEC_TO_TIME(seek_pos), startpts, m_av_clock->OMXMediaTime());
@@ -1722,8 +1724,9 @@ int main(int argc, char *argv[])
 
     if(!m_omx_pkt)
       m_omx_pkt = m_omx_reader.Read();
-    if(m_has_video2 && !m_omx_pkt2)
-      m_omx_pkt2 = m_omx_reader2.Read();
+    if(m_has_video2)
+      while (!m_omx_reader2.IsEof() && !m_omx_pkt2)
+        m_omx_pkt2 = m_omx_reader2.Read();
 
     if(m_omx_pkt)
       m_send_eos = false;
@@ -1762,7 +1765,8 @@ int main(int argc, char *argv[])
       {
          m_packet_after_seek = true;
       }
-      if(m_omx_pkt2 && m_omx_pkt2->dts < m_omx_pkt->dts && m_player_video.AddPacket(m_omx_pkt2))
+      fprintf(m_dcc_log, "pkt->dts=%llu pkt2->dts=%llu\n", m_omx_pkt ? (long long)m_omx_pkt->dts : 0LL, m_omx_pkt2 ? (long long)m_omx_pkt2->dts : 0LL);
+      if(m_omx_pkt2 && m_omx_pkt2->dts <= m_omx_pkt->dts && m_player_video.AddPacket(m_omx_pkt2))
         m_omx_pkt2 = NULL;
       else if(m_player_video.AddPacket(m_omx_pkt))
         m_omx_pkt = NULL;
@@ -1838,6 +1842,9 @@ do_exit:
   m_omx_reader.Close();
   if (m_has_video2)
     m_omx_reader2.Close();
+
+  if (m_dcc_log)
+    fclose(m_dcc_log);
 
   m_av_clock->OMXDeinitialize();
   if (m_av_clock)
