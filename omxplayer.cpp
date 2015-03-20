@@ -548,7 +548,8 @@ int main(int argc, char *argv[])
   bool idle = false;
   std::string            m_cookie              = "";
   std::string            m_user_agent          = "";
-  std::string            m_other_eye           = "";
+  std::string            m_other_view          = "";
+  bool                   m_mismux              = false;
 
   const int font_opt        = 0x100;
   const int italic_font_opt = 0x201;
@@ -584,7 +585,8 @@ int main(int argc, char *argv[])
   const int display_opt     = 0x20f;
   const int http_cookie_opt = 0x300;
   const int http_user_agent_opt = 0x301;
-  const int other_eye_opt   = 0x302;
+  const int other_view_opt  = 0x302;
+  const int mismux_opt      = 0x303;
 
   struct option longopts[] = {
     { "info",         no_argument,        NULL,          'i' },
@@ -641,7 +643,8 @@ int main(int argc, char *argv[])
     { "display",      required_argument,  NULL,          display_opt },
     { "cookie",       required_argument,  NULL,          http_cookie_opt },
     { "user-agent",   required_argument,  NULL,          http_user_agent_opt },
-    { "other-eye",    required_argument,  NULL,          other_eye_opt },
+    { "other-view",   required_argument,  NULL,          other_view_opt },
+    { "mismux",       no_argument,        NULL,          mismux_opt },
     { 0, 0, 0, 0 }
   };
 
@@ -870,8 +873,11 @@ int main(int argc, char *argv[])
       case http_user_agent_opt:
         m_user_agent = optarg;
         break;    
-      case other_eye_opt:
-        m_other_eye = optarg;
+      case other_view_opt:
+        m_other_view = optarg;
+        break;
+      case mismux_opt:
+        m_mismux = true;
         break;
       case 0:
         break;
@@ -916,14 +922,14 @@ int main(int argc, char *argv[])
     return 0;
   }
 
-  if(m_other_eye.length())
+  if(m_other_view.length())
     m_has_video2 = true;
 
   if(m_has_video2)
   {
-    if (IsURL(m_other_eye) || !Exists(m_other_eye))
+    if (IsURL(m_other_view) || !Exists(m_other_view))
     {
-      PrintFileNotFound(m_other_eye);
+      PrintFileNotFound(m_other_view);
       return 0;
     }
   }
@@ -1012,10 +1018,10 @@ int main(int argc, char *argv[])
 
   if(m_has_video2)
   {
-    if (!m_omx_reader2.Open(m_other_eye.c_str(), m_dump_format, 0, 0, "", "") ||
+    if (!m_omx_reader2.Open(m_other_view.c_str(), m_dump_format, 0, 0, "", "") ||
         m_omx_reader2.VideoStreamCount() == 0)
     goto do_exit;
-    printf("Opened other eye with %u video streams\n", m_omx_reader2.VideoStreamCount());
+    printf("Opened other view with %u video streams\n", m_omx_reader2.VideoStreamCount());
   }
 
   if (m_dump_format_exit)
@@ -1473,7 +1479,7 @@ int main(int argc, char *argv[])
           idle = false;
           if(!m_omx_reader.Open(m_filename.c_str(), m_dump_format, true))
             goto do_exit;
-          if (m_has_video2 && !m_omx_reader2.Open(m_other_eye.c_str(), m_dump_format, true))
+          if (m_has_video2 && !m_omx_reader2.Open(m_other_view.c_str(), m_dump_format, true))
             goto do_exit;
         }
         m_new_win_pos = true;
@@ -1724,9 +1730,12 @@ int main(int argc, char *argv[])
 
     if(!m_omx_pkt)
       m_omx_pkt = m_omx_reader.Read();
-    if(m_has_video2)
-      while (!m_omx_reader2.IsEof() && !m_omx_pkt2)
-        m_omx_pkt2 = m_omx_reader2.Read();
+    if(m_has_video2 && !m_omx_pkt2)
+    {
+      m_omx_pkt2 = m_omx_reader2.Read();
+      if (!m_omx_pkt2 && m_omx_reader2.IsEof())
+        m_has_video2 = false;
+    }
 
     if(m_omx_pkt)
       m_send_eos = false;
@@ -1761,15 +1770,32 @@ int main(int argc, char *argv[])
 
     if(m_has_video && m_omx_pkt && m_omx_reader.IsActive(OMXSTREAM_VIDEO, m_omx_pkt->stream_index))
     {
+      if (m_has_video2 && !m_omx_pkt2)
+      {
+        OMXClock::OMXSleep(10);
+        continue;
+      }
       if (TRICKPLAY(m_av_clock->OMXPlaySpeed()))
       {
          m_packet_after_seek = true;
       }
-      fprintf(m_dcc_log, "pkt->dts=%llu pkt2->dts=%llu\n", m_omx_pkt ? (long long)m_omx_pkt->dts : 0LL, m_omx_pkt2 ? (long long)m_omx_pkt2->dts : 0LL);
-      if(m_omx_pkt2 && m_omx_pkt2->dts <= m_omx_pkt->dts && m_player_video.AddPacket(m_omx_pkt2))
-        m_omx_pkt2 = NULL;
-      else if(m_player_video.AddPacket(m_omx_pkt))
-        m_omx_pkt = NULL;
+      fprintf(m_dcc_log, "pkt->dts/pts=%llu/%llu pkt2->dts/pts=%llu/%llu\n",
+              m_omx_pkt ? (long long)m_omx_pkt->dts : 0LL,
+              m_omx_pkt ? (long long)m_omx_pkt->pts : 0LL,
+              m_omx_pkt2 ? (long long)m_omx_pkt2->dts : 0LL,
+              m_omx_pkt2 ? (long long)m_omx_pkt2->pts : 0LL);
+      OMXPacket ** pkt;
+
+      if(m_omx_pkt2 &&
+         (m_omx_pkt2->dts < m_omx_pkt->dts ||
+          (m_omx_pkt2->dts == m_omx_pkt->dts &&
+           (m_omx_pkt2->pts != m_omx_pkt->pts || m_mismux))))
+        pkt = &m_omx_pkt2;
+      else
+        pkt = &m_omx_pkt;
+
+      if(m_player_video.AddPacket(*pkt))
+        *pkt = NULL;
       else
         OMXClock::OMXSleep(10);
     }
